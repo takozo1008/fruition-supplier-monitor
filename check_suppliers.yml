@@ -3,7 +3,12 @@ name: 仕入先・マルシェ候補チェック
 on:
   schedule:
     - cron: '0 23 * * *'    # 毎朝8:00 JST → 仕入先サイト更新チェック＋マルシェ候補チェック
-  workflow_dispatch:         # 手動実行ボタン
+  workflow_dispatch:         # 手動実行ボタン（アプリから都道府県を渡せる）
+    inputs:
+      prefectures:
+        description: '都道府県コード（例: kanagawa,tokyo）'
+        required: false
+        default: 'kanagawa'
 
 jobs:
   check-suppliers:
@@ -34,4 +39,6 @@ jobs:
           python-version: '3.11'
 
       - name: マルシェ候補をチェック
+        env:
+          PREFECTURES: ${{ github.event.inputs.prefectures || vars.PREFECTURES || 'kanagawa' }}
         run: python check_marche.py

@@ -1,23 +1,36 @@
 """
 マルシェ候補自動収集スクリプト
-対象: fmfm.jp（神奈川県）
+対象: fmfm.jp（複数都道府県対応）
 実行: GitHub Actions で毎朝8時JST
+      環境変数 PREFECTURES でカンマ区切りで都道府県コードを指定可能
+      例: PREFECTURES=kanagawa,tokyo,shizuoka
+
+fmfm.jp 都道府県コード一覧:
+  hokkaido / aomori / iwate / miyagi / akita / yamagata / fukushima /
+  ibaraki / tochigi / gunma / saitama / chiba / tokyo / kanagawa /
+  niigata / toyama / ishikawa / fukui / yamanashi / nagano / shizuoka /
+  aichi / mie / shiga / kyoto / osaka / hyogo / nara / wakayama /
+  tottori / shimane / okayama / hiroshima / yamaguchi /
+  tokushima / kagawa / ehime / kochi /
+  fukuoka / saga / nagasaki / kumamoto / oita / miyazaki / kagoshima / okinawa
 """
-import hashlib
 import json
+import os
 import re
 import urllib.request
 from datetime import datetime, timezone, timedelta
 
 FIREBASE_URL = "https://fruition-marche-default-rtdb.firebaseio.com"
-PREF_LABEL   = "神奈川県"
 
-SOURCES = [
-    {"name": "fmfm.jp", "url": "https://fmfm.jp/area/kanagawa"},
-    {"name": "fmfm.jp", "url": "https://fmfm.jp/area/kanagawa?page=2"},
-]
+# 環境変数 PREFECTURES があればそれを使う、なければ kanagawa のみ
+_env_prefs = os.environ.get("PREFECTURES", "kanagawa")
+TARGET_PREFS = [p.strip() for p in _env_prefs.split(",") if p.strip()]
 
-# ── HTTP ──────────────────────────────────────────
+SOURCES = []
+for pref in TARGET_PREFS:
+    SOURCES.append(f"https://fmfm.jp/area/{pref}")
+    SOURCES.append(f"https://fmfm.jp/area/{pref}?page=2")
+
 def fetch(url):
     try:
         req = urllib.request.Request(url, headers={
@@ -33,88 +46,73 @@ def fetch(url):
         print(f"  FETCH ERROR {url}: {e}")
         return None
 
-# ── パーサー ──────────────────────────────────────
+def strip_tags(s):
+    return re.sub(r"<[^>]+>", "", s).strip()
+
 def parse_fmfm(html):
-    """
-    fmfm.jp/area/kanagawa をパース。
-    イベントリンク /event/detail/[id] を起点に
-    名前・日付・場所を抽出する。
-    """
     events = []
-    seen_urls = set()
+    seen = set()
 
-    # /event/detail/数字 へのリンクを全て抽出
-    # <a href="/event/detail/2358" ...>イベント名</a> パターン
-    link_pattern = re.compile(
-        r'href="(/event/detail/(\d+))[^"]*"[^>]*>\s*([^<]{2,80})\s*</a>',
-        re.DOTALL
+    # eventItem ブロックを抽出（<a ... class="eventItem"> ... </a>）
+    blocks = re.findall(
+        r'(<a\s[^>]*class="[^"]*eventItem[^"]*"[^>]*>.*?</a>)',
+        html, re.DOTALL
     )
+    print(f"  eventItem ブロック数: {len(blocks)}")
 
-    # 日付パターン（ページ内の直近の日付を検索）
-    # "05/03 (日)" または "2026年05月03日" 形式
-    date_patterns = [
-        re.compile(r'(\d{4})年(\d{1,2})月(\d{1,2})日'),
-        re.compile(r'(\d{4})[/-](\d{1,2})[/-](\d{1,2})'),
-        re.compile(r'(\d{1,2})/(\d{1,2})\s*[（(].[）)]'),  # 05/03 (日)
-    ]
+    # 日付ヘッダー（<h3 class="eventDate">2026年05月16日（土）</h3>）
+    # HTMLを分割してブロックごとに直前の日付を取得
+    date_headers = re.findall(r'<h3[^>]*class="eventDate"[^>]*>([^<]+)</h3>', html)
 
-    # ページを「イベントブロック」単位で分割して処理
-    # href="/event/detail/" を含む前後2000文字を切り出す
-    for m in link_pattern.finditer(html):
-        path      = m.group(1)
-        event_url = f"https://fmfm.jp{path}"
-        raw_name  = m.group(3).strip()
-
-        # 重複スキップ
-        if event_url in seen_urls:
+    # ブロック全体を処理
+    for block in blocks:
+        # URL
+        url_m = re.search(r'href="(https://fmfm\.jp/(?:event|regular)/detail/\d+)"', block)
+        if not url_m:
             continue
-        # ナビゲーション等の短い/無関係なテキストをスキップ
-        if len(raw_name) < 3 or raw_name in ('詳細', '続きを読む', 'もっと見る', '>>>'):
+        url = url_m.group(1)
+        if url in seen:
+            continue
+        seen.add(url)
+
+        # イベント名
+        name_m = re.search(r'class="eventItem__name"[^>]*>([^<]+)', block)
+        if not name_m:
+            continue
+        name = name_m.group(1).strip()
+        if not name:
             continue
 
-        seen_urls.add(event_url)
+        # カレンダー日付（例: "05/16 (土)"）
+        cal_m = re.search(r'class="eventItem__calendar"[^>]*>([^<]+)', block)
+        date_str = cal_m.group(1).strip() if cal_m else ""
 
-        # 前後の文脈から日付を探す
-        start = max(0, m.start() - 500)
-        end   = min(len(html), m.end() + 500)
-        ctx   = html[start:end]
-
+        # YYYY-MM-DD に変換
         date = ""
-        # YYYY年MM月DD日
-        dm = re.search(r'(\d{4})年(\d{1,2})月(\d{1,2})日', ctx)
+        dm = re.search(r'(\d{1,2})/(\d{1,2})', date_str)
         if dm:
-            date = f"{dm.group(1)}-{dm.group(2).zfill(2)}-{dm.group(3).zfill(2)}"
-        else:
-            # MM/DD
-            dm2 = re.search(r'(\d{1,2})/(\d{1,2})', ctx)
-            if dm2:
-                year = datetime.now(timezone(timedelta(hours=9))).year
-                date = f"{year}-{dm2.group(1).zfill(2)}-{dm2.group(2).zfill(2)}"
+            jst = timezone(timedelta(hours=9))
+            year = datetime.now(jst).year
+            date = f"{year}-{dm.group(1).zfill(2)}-{dm.group(2).zfill(2)}"
 
-        # 場所（神奈川の市区町村名）
-        loc_m = re.search(
-            r'(横浜市|川崎市|相模原市|鎌倉市|藤沢市|茅ヶ崎市|逗子市|三浦市|小田原市|平塚市|厚木市|大和市|海老名市|座間市|綾瀬市|秦野市|伊勢原市|南足柄市|横須賀市|葉山町|寒川町|大磯町|二宮町|中井町|大井町|松田町|山北町|開成町|箱根町|真鶴町|湯河原町|愛川町|清川村)',
-            ctx
-        )
-        location = loc_m.group(1) if loc_m else PREF_LABEL
+        # 住所
+        addr_m = re.search(r'class="eventItem__address"[^>]*>([^<]+)', block)
+        location = addr_m.group(1).strip() if addr_m else "神奈川県"
 
-        # クリーンアップ：HTMLエンティティ除去
-        name = re.sub(r'&[a-zA-Z]+;', '', raw_name).strip()
-        name = re.sub(r'\s+', ' ', name)
+        # カテゴリ
+        cat_m = re.search(r'class="eventItem__category"[^>]*>([^<]+)', block)
+        category = cat_m.group(1).strip() if cat_m else ""
 
-        if name:
-            events.append({
-                "name":     name,
-                "date":     date,
-                "location": location,
-                "url":      event_url,
-                "source":   "fmfm.jp",
-            })
-            print(f"  FOUND: {name} | {date} | {location}")
+        events.append({
+            "name":     f"[{category}] {name}" if category else name,
+            "date":     date,
+            "location": location,
+            "url":      url,
+            "source":   "fmfm.jp",
+        })
 
     return events
 
-# ── Firebase ──────────────────────────────────────
 def firebase_get(path):
     try:
         with urllib.request.urlopen(f"{FIREBASE_URL}/{path}.json", timeout=10) as r:
@@ -134,7 +132,6 @@ def firebase_post(path, data):
     with urllib.request.urlopen(req, timeout=10) as r:
         return json.loads(r.read())
 
-# ── メイン ────────────────────────────────────────
 def main():
     jst = timezone(timedelta(hours=9))
     now = datetime.now(jst).strftime("%Y-%m-%dT%H:%M:%S+09:00")
@@ -146,26 +143,23 @@ def main():
         for v in existing.values():
             if isinstance(v, dict) and v.get("url"):
                 existing_urls.add(v["url"])
-
     print(f"既存候補数: {len(existing_urls)} 件\n")
 
     added = 0
-    for source in SOURCES:
-        print(f"Fetching: {source['url']}")
-        html = fetch(source["url"])
+    for src_url in SOURCES:
+        print(f"Fetching: {src_url}")
+        html = fetch(src_url)
         if not html:
-            print("  SKIP: fetch失敗")
             continue
-
         print(f"  HTMLサイズ: {len(html)} bytes")
+
         events = parse_fmfm(html)
         print(f"  パース結果: {len(events)} 件")
 
         for ev in events:
             if ev["url"] in existing_urls:
-                print(f"  SKIP（重複）: {ev['name']}")
                 continue
-            candidate = {
+            firebase_post("fruition/marcheCandidates", {
                 "name":     ev["name"],
                 "date":     ev["date"],
                 "location": ev["location"],
@@ -173,11 +167,10 @@ def main():
                 "source":   ev["source"],
                 "status":   "pending",
                 "addedAt":  now,
-            }
-            firebase_post("fruition/marcheCandidates", candidate)
+            })
             existing_urls.add(ev["url"])
             added += 1
-            print(f"  ADD: {ev['name']} ({ev['date']})")
+            print(f"  ADD: {ev['name']} ({ev['date']}) {ev['location']}")
 
     print(f"\n完了: {added} 件を追加しました")
 
