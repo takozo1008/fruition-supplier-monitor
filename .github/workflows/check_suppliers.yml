@@ -1,12 +1,17 @@
-name: 仕入先サイト更新チェック
+name: 仕入先・マルシェ候補チェック
 
 on:
   schedule:
-    - cron: '0 23 * * *'  # 毎朝8:00 JST (UTC 23:00)
-  workflow_dispatch:       # 手動実行ボタン
+    - cron: '0 23 * * *'    # 毎朝8:00 JST → 仕入先サイト更新チェック＋マルシェ候補チェック
+  workflow_dispatch:         # 手動実行ボタン（アプリから都道府県を渡せる）
+    inputs:
+      prefectures:
+        description: '都道府県コード（例: kanagawa,tokyo）'
+        required: false
+        default: 'kanagawa'
 
 jobs:
-  check:
+  check-suppliers:
     runs-on: ubuntu-latest
     steps:
       - name: リポジトリをチェックアウト
@@ -19,3 +24,38 @@ jobs:
 
       - name: 仕入先サイトをチェック
         run: python check_suppliers.py
+
+  check-marche:
+    runs-on: ubuntu-latest
+    # 毎日、または手動実行時に動く
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Python 3.11 をセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: マルシェ候補をチェック
+        env:
+          PREFECTURES: ${{ github.event.inputs.prefectures || vars.PREFECTURES || 'kanagawa' }}
+        run: python check_marche.py
+
+  check-namamame:
+    runs-on: ubuntu-latest
+    # スケジュール実行では動かさない（アプリのボタンから手動実行のみ）
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Python 3.11 をセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 生豆本舗 在庫チェック
+        run: python check_namamame.py
+
