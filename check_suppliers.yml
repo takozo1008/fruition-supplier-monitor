@@ -42,3 +42,4 @@ jobs:
         env:
           PREFECTURES: ${{ github.event.inputs.prefectures || vars.PREFECTURES || 'kanagawa' }}
         run: python check_marche.py
+

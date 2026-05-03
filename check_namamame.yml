@@ -1,0 +1,19 @@
+name: 生豆本舗 在庫チェック
+
+on:
+  workflow_dispatch:    # アプリの「生豆本舗の在庫を取得」ボタンから手動実行
+
+jobs:
+  check-namamame:
+    runs-on: ubuntu-latest
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Python 3.11 をセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 生豆本舗 在庫チェック
+        run: python check_namamame.py
