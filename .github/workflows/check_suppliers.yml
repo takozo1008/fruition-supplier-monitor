@@ -9,6 +9,10 @@ on:
         description: '都道府県コード（例: kanagawa,tokyo）'
         required: false
         default: 'kanagawa'
+      job:
+        description: '実行ジョブ (all/namamame/marche/suppliers)'
+        required: false
+        default: 'all'
 
 jobs:
   check-suppliers:
@@ -23,12 +27,13 @@ jobs:
           python-version: '3.11'
 
       - name: 仕入先サイトをチェック
+        env:
+          FIREBASE_DB_SECRET: ${{ secrets.FIREBASE_DB_SECRET }}
         run: python check_suppliers.py
 
   check-marche:
     runs-on: ubuntu-latest
-    # 毎日、または手動実行時に動く
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || github.event.inputs.job == 'all' || github.event.inputs.job == 'marche'
     steps:
       - name: リポジトリをチェックアウト
         uses: actions/checkout@v4
@@ -41,12 +46,12 @@ jobs:
       - name: マルシェ候補をチェック
         env:
           PREFECTURES: ${{ github.event.inputs.prefectures || vars.PREFECTURES || 'kanagawa' }}
+          FIREBASE_DB_SECRET: ${{ secrets.FIREBASE_DB_SECRET }}
         run: python check_marche.py
 
   check-namamame:
     runs-on: ubuntu-latest
-    # スケジュール実行では動かさない（アプリのボタンから手動実行のみ）
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'all' || github.event.inputs.job == 'namamame')
     steps:
       - name: リポジトリをチェックアウト
         uses: actions/checkout@v4
@@ -57,5 +62,7 @@ jobs:
           python-version: '3.11'
 
       - name: 生豆本舗 在庫チェック
+        env:
+          FIREBASE_DB_SECRET: ${{ secrets.FIREBASE_DB_SECRET }}
         run: python check_namamame.py
 
