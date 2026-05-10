@@ -10,7 +10,7 @@ on:
         required: false
         default: 'kanagawa'
       job:
-        description: '実行ジョブ (all/namamame/marche/suppliers)'
+        description: '実行ジョブ (all/namamame/marche/suppliers/coffue)'
         required: false
         default: 'all'
 
@@ -65,4 +65,21 @@ jobs:
         env:
           FIREBASE_DB_SECRET: ${{ secrets.FIREBASE_DB_SECRET }}
         run: python check_namamame.py
+
+  check-coffue:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event.inputs.job == 'all' || github.event.inputs.job == 'coffue'
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Python 3.11 をセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: coffue.com イベント取得
+        env:
+          FIREBASE_DB_SECRET: ${{ secrets.FIREBASE_DB_SECRET }}
+        run: python check_coffue.py
 
